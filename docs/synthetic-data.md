@@ -31,4 +31,5 @@ About 20 new PENDING transactions per second, resolved to SUCCESS/FAILED after 2
 reversals per second (90% recent transactions, 10% up to 7 days old, so old days must be corrected);
 short-lived test transactions (card bin `000000`) that are hard-deleted after 20-60 seconds; one merchant
 changes risk level and province every minute (configurable). When the column `installments` is added, the
-simulator starts filling it.
+simulator starts filling it. After a simulator restart, still-pending rows are rescheduled for the first simulator
+tick at or after 10 seconds from creation; the outcome is sampled again because the prior in-memory schedule is lost.

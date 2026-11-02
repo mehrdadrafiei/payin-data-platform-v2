@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 from payin.common import PROVINCES, RISK_NEXT, next_province, next_risk
 from payin.seed_history import plan_history
-from payin.simulator import draw_count, new_txn_rows
+from payin.simulator import draw_count, new_txn_rows, recovered_due
 
 
 def test_next_risk_always_changes_and_is_valid():
@@ -46,3 +46,13 @@ def test_draw_count_matches_rate():
     total = sum(draw_count(0.8, rng) for _ in range(20000))
     assert 0.77 < total / 20000 < 0.83
     assert all(draw_count(2.0, rng) == 2 for _ in range(10))
+
+
+def test_recovered_pending_rows_resolve_by_ten_seconds_after_creation():
+    created = datetime(2026, 11, 3, 10, 0, tzinfo=timezone.utc)
+    db_now = created + timedelta(seconds=2)
+    monotonic_now = 50.0
+
+    assert recovered_due(created, db_now, monotonic_now) == 58.0
+    assert recovered_due(created, created + timedelta(seconds=10), monotonic_now) == monotonic_now
+    assert recovered_due(created, created + timedelta(seconds=20), monotonic_now) == monotonic_now

@@ -90,7 +90,7 @@ def test_merchant_update_that_changes_nothing_still_produces_an_event(pg):
 
 
 # ------------------------------------------------------ schema evolution ----
-def test_adding_a_column_does_not_stop_the_pipeline(pg):
+def test_adding_a_column_does_not_stop_the_pipeline(pg, pipeline_ready):
     """Add `installments` (no-op if it already exists). The connector must keep running and the new
     column must show up in the stored event payload without any manual step."""
     pg.execute("ALTER TABLE core.transactions ADD COLUMN IF NOT EXISTS installments INTEGER")
@@ -105,8 +105,16 @@ def test_adding_a_column_does_not_stop_the_pipeline(pg):
     tid2 = pg.execute(NEW_TXN, (720_000_001,)).fetchone()[0]
     eventually(lambda: ops("transactions", tid2) == ["c"], what="insert event without the new column")
 
+    def installments_reached_models():
+        silver = ch_rows(f"SELECT installments FROM silver.transactions_current WHERE transaction_id = {tid}")
+        gold = ch_rows(f"SELECT installments FROM gold.fct_transactions WHERE transaction_id = {tid}")
+        return silver == [{"installments": 7}] and gold == [{"installments": 7}]
+
+    eventually(installments_reached_models, timeout=300,
+               what="installments value in silver current state and gold fact")
     assert connector_status()["connector"]["state"] == "RUNNING"
     assert ch_value("SELECT count() FROM bronze.cdc_errors") == errors_before
+    assert pg.execute("SELECT 1").fetchone()[0] == 1
     pg.execute("DELETE FROM core.transactions WHERE transaction_id = ANY(%s)", ([tid, tid2],))
 
 

@@ -15,6 +15,7 @@ import random
 import signal
 import time
 from collections import Counter, deque
+from datetime import timedelta
 
 import psycopg
 
@@ -29,6 +30,7 @@ OLD_REVERSAL_SHARE = float(os.getenv("SIM_OLD_REVERSAL_SHARE", "0.10"))
 TEST_BATCH_PROB = float(os.getenv("SIM_TEST_BATCH_PROB", "0.15"))   # chance per second
 SUCCESS_SHARE = 0.88
 TEST_BIN = "000000"             # marks test transactions so leftovers can be cleaned after a restart
+RECOVERY_RESOLUTION_S = 10
 
 CHANNELS = ["POS", "IPG", "QR"]
 CHANNEL_WEIGHTS = [0.55, 0.30, 0.15]
@@ -66,14 +68,9 @@ WHERE transaction_id = ANY(%s) AND status = 'SUCCESS'
 """
 DELETE_TESTS = "DELETE FROM core.transactions WHERE transaction_id = ANY(%s)"
 RECOVER_PENDING = """
-WITH picked AS (
-    SELECT transaction_id, CASE WHEN random() < 0.88 THEN 'SUCCESS' ELSE 'FAILED' END AS s
-    FROM core.transactions
-    WHERE status = 'PENDING' AND created_at > now() - interval '2 days' AND created_at < now() - interval '30 seconds'
-)
-UPDATE core.transactions t
-SET status = p.s, fee_amount = CASE WHEN p.s = 'SUCCESS' THEN (t.amount * 0.006)::bigint ELSE 0 END, updated_at = now()
-FROM picked p WHERE t.transaction_id = p.transaction_id
+SELECT transaction_id, created_at, now() AS db_now
+FROM core.transactions
+WHERE status = 'PENDING'
 """
 
 
@@ -91,6 +88,12 @@ def draw_count(rate, rng):
     """Whole number of events for a per-second rate (0.8 -> usually 1 or 0, 2.3 -> 2 or 3)."""
     whole = int(rate)
     return whole + (1 if rng.random() < rate - whole else 0)
+
+
+def recovered_due(created_at, db_now, monotonic_now):
+    """Schedule an orphaned PENDING row for its 10-second resolution deadline."""
+    remaining = max(0.0, (created_at + timedelta(seconds=RECOVERY_RESOLUTION_S) - db_now).total_seconds())
+    return monotonic_now + remaining
 
 
 class Simulator:
@@ -118,10 +121,14 @@ class Simulator:
 
     # ---- startup clean-up (after a stop/start the in-memory schedule is gone) ----
     def recover(self):
-        n = self.conn.execute(RECOVER_PENDING).rowcount
+        rows = self.conn.execute(RECOVER_PENDING).fetchall()
+        now = time.monotonic()
+        for tid, created_at, db_now in rows:
+            final = "SUCCESS" if self.rng.random() < SUCCESS_SHARE else "FAILED"
+            heapq.heappush(self.pending, (recovered_due(created_at, db_now, now), tid, final))
         d = self.conn.execute("DELETE FROM core.transactions WHERE card_bin = %s", (TEST_BIN,)).rowcount
-        if n or d:
-            log.info("recovery: resolved %d stale PENDING, deleted %d leftover test transactions", n, d)
+        if rows or d:
+            log.info("recovery: rescheduled %d PENDING, deleted %d leftover test transactions", len(rows), d)
 
     # ---- one tick = one second of activity ----
     def tick(self):
