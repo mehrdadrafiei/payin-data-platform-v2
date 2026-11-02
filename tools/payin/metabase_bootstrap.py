@@ -1,7 +1,9 @@
-"""Idempotent Metabase setup: admin user, settings, data sources, baseline cards and dashboard."""
+"""Idempotent Metabase setup: admin user, settings, data sources, baseline + optimized cards and dashboards."""
 import logging
 import os
 import sys
+import urllib.parse
+import urllib.request
 
 import psycopg
 
@@ -15,9 +17,14 @@ COLLECTION = "Payin Data Platform"
 PG_NAME = "Payin core (operational Postgres)"
 CH_NAME = "Payin analytics (ClickHouse)"
 
+CH_URL = os.getenv("CH_URL", "http://clickhouse:8123")
+CH_ADMIN_USER = os.getenv("CH_USER", "admin")
+CH_ADMIN_PASSWORD = os.getenv("CH_PASSWORD", "ch_pw")
+BI_USER, BI_PASSWORD = "bi_ro", "bi_ro_pw"          # same name on both databases; demo credentials
+
 
 def ensure_bi_role():
-    """Read-only Postgres user for Metabase (baseline queries must not be able to change the source)."""
+    """Read-only Postgres user for the BASELINE dashboard: transactions + the non-PII merchant columns only."""
     with psycopg.connect(autocommit=True) as conn:
         conn.execute("""DO $$ BEGIN
             IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'bi_ro') THEN
@@ -25,8 +32,26 @@ def ensure_bi_role():
             END IF; END $$""")
         conn.execute("ALTER ROLE bi_ro SET default_transaction_read_only = on")
         conn.execute("GRANT USAGE ON SCHEMA core TO bi_ro")
-        conn.execute("GRANT SELECT ON ALL TABLES IN SCHEMA core TO bi_ro")
-        conn.execute("ALTER DEFAULT PRIVILEGES IN SCHEMA core GRANT SELECT ON TABLES TO bi_ro")
+        conn.execute("GRANT SELECT ON core.transactions TO bi_ro")
+        conn.execute("REVOKE SELECT ON core.merchants FROM bi_ro")      # also drops older table-level/column grants
+        conn.execute("GRANT SELECT (merchant_id, name, mcc, province, risk_level, updated_at) "
+                     "ON core.merchants TO bi_ro")
+        conn.execute("ALTER DEFAULT PRIVILEGES IN SCHEMA core REVOKE SELECT ON TABLES FROM bi_ro")
+
+
+def ch_exec(sql):
+    q = urllib.parse.urlencode({"user": CH_ADMIN_USER, "password": CH_ADMIN_PASSWORD})
+    req = urllib.request.Request(f"{CH_URL}/?{q}", data=sql.encode(), method="POST")
+    urllib.request.urlopen(req, timeout=60).read()
+
+
+def ensure_ch_reader():
+    """Dashboard user on ClickHouse: SELECT on the gold database only. A database-level grant survives the
+    table rebuilds of dbt (dim_merchant is dropped and recreated on every run)."""
+    ch_exec("CREATE DATABASE IF NOT EXISTS gold")
+    ch_exec(f"CREATE USER IF NOT EXISTS {BI_USER} IDENTIFIED BY '{BI_PASSWORD}'")
+    ch_exec(f"ALTER USER {BI_USER} IDENTIFIED BY '{BI_PASSWORD}'")
+    ch_exec(f"GRANT SELECT ON gold.* TO {BI_USER}")
 
 
 def set_settings(mb):
@@ -41,6 +66,7 @@ def set_settings(mb):
 def ensure_database(mb, name, engine, details):
     for db in mb.databases():
         if db["name"] == name:
+            mb.call("PUT", f"/api/database/{db['id']}", {"details": details})   # keep credentials current
             return db["id"]
     created = mb.call("POST", "/api/database", {
         "name": name, "engine": engine, "details": details,
@@ -88,18 +114,20 @@ def check_clickhouse(mb, db_id):
 def main():
     setup_logging()
     ensure_bi_role()
+    ensure_ch_reader()
     mb = Metabase()
     mb.wait_until_ready()
     mb.login()
     set_settings(mb)
 
     pg_id = ensure_database(mb, PG_NAME, "postgres", {
-        "host": "postgres", "port": 5432, "dbname": "payin", "user": "bi_ro", "password": "bi_ro_pw",
+        "host": "postgres", "port": 5432, "dbname": "payin", "user": BI_USER, "password": BI_PASSWORD,
         "ssl": False, "tunnel-enabled": False})
 
+    ch_id = None
     try:
         ch_id = ensure_database(mb, CH_NAME, "clickhouse", {
-            "host": "clickhouse", "port": 8123, "dbname": "default", "user": "admin", "password": "ch_pw",
+            "host": "clickhouse", "port": 8123, "dbname": "gold", "user": BI_USER, "password": BI_PASSWORD,
             "ssl": False, "scan-all-databases": True})
         check_clickhouse(mb, ch_id)
     except MetabaseError as exc:
@@ -112,6 +140,12 @@ def main():
     dash = upsert_dashboard(mb, col, C.BASELINE_DASHBOARD, ids)
     log.info("baseline dashboard ready: http://localhost:3000/dashboard/%s  (login %s)", dash,
              os.getenv("MB_ADMIN_EMAIL", "admin@payin.local"))
+
+    if ch_id is not None:
+        gids = [upsert_card(mb, col, ch_id, C.OPTIMIZED_PREFIX + c["title"], c["gold_sql"], c["display"], c["viz"])
+                for c in C.CARDS]
+        gdash = upsert_dashboard(mb, col, C.OPTIMIZED_DASHBOARD, gids)
+        log.info("optimized dashboard ready: http://localhost:3000/dashboard/%s", gdash)
 
 
 if __name__ == "__main__":

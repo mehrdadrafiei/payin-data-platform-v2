@@ -103,3 +103,23 @@ rebuild:  ## drop silver + gold and let the transformer rebuild them from bronze
 	docker compose stop transformer
 	docker compose exec -T clickhouse clickhouse-client --user admin --password ch_pw --multiquery -q "DROP DATABASE IF EXISTS silver SYNC; DROP DATABASE IF EXISTS gold SYNC; CREATE DATABASE silver; CREATE DATABASE gold"
 	docker compose start transformer
+
+.PHONY: build-tools test-access parity parity-quiet benchmark-report
+
+# payin/ is COPYed into the tools image (rebuild after code changes); tests/ is bind-mounted
+test-unit test-e2e test-access parity benchmark-report: build-tools
+
+build-tools:  ## rebuild the tools image (fast when nothing changed)
+	docker compose build cli
+
+test-access:  ## dashboard users: read-only, gold only
+	docker compose run --rm cli python -m pytest -v tests/e2e/test_access.py
+
+parity:  ## baseline vs optimized + source reconciliation, single attempt (exact only if the source is quiet)
+	docker compose run --rm cli python -m payin.parity
+
+parity-quiet:  ## stops the simulator, retries up to 5 min until the pipeline has caught up, restarts it
+	docker compose stop simulator; docker compose run --rm cli python -m payin.parity --wait 300; rc=$$?; docker compose start simulator; exit $$rc
+
+benchmark-report:  ## benchmarks/report.md from the latest baseline + optimized measurements (ARGS="--simulator stopped")
+	docker compose run --rm cli python -m payin.benchmark_report $(ARGS)

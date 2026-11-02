@@ -96,3 +96,48 @@ ORDER BY 1, 2""",
 
 BASELINE_PREFIX = "[core] "
 BASELINE_DASHBOARD = "Daily Sales / \u0641\u0631\u0648\u0634 \u0631\u0648\u0632\u0627\u0646\u0647 \u2014 baseline (core)"
+
+
+# ---- optimized (gold) queries: same output columns as the baseline, so the same viz settings work ----
+TODAY_T = f"toDate(toTimeZone(now(), '{TZ}'))"
+
+GOLD_SQL = {
+    "card1": f"""SELECT day, cnt AS success_count, amt AS success_amount
+FROM (
+    SELECT txn_date AS day, sum(success_count) AS cnt, sum(success_amount) AS amt
+    FROM gold.agg_daily_channel
+    WHERE txn_date >= {TODAY_T} - 89
+    GROUP BY txn_date
+    HAVING cnt > 0
+)
+ORDER BY day""",
+    "card2": f"""SELECT txn_date AS day,
+       channel,
+       round(100.0 * success_count / nullIf(success_count + failed_count + reversed_count, 0), 2) AS success_rate_pct
+FROM gold.agg_daily_channel
+WHERE txn_date >= {TODAY_T} - 29
+ORDER BY day, channel""",
+    "card3": f"""SELECT a.merchant_id AS merchant_id,
+       d.name AS name,
+       a.success_amount AS success_amount,
+       a.success_count AS success_count
+FROM gold.agg_merchant_month AS a
+INNER JOIN (SELECT merchant_id, name FROM gold.dim_merchant WHERE is_current = 1) AS d
+        ON a.merchant_id = d.merchant_id
+WHERE a.txn_month = toStartOfMonth({TODAY_T})
+ORDER BY success_amount DESC
+LIMIT 10""",
+    "card4": f"""SELECT mcc, province_at_txn AS province, sum(success_fee_amount) AS fee_amount
+FROM gold.agg_fee_day_mcc_province
+WHERE txn_date >= {TODAY_T} - 89
+GROUP BY mcc, province_at_txn
+ORDER BY mcc, province""",
+    "card5": """SELECT txn_month AS month, risk_level_at_txn AS risk_level, success_count, success_amount
+FROM gold.agg_month_risk
+ORDER BY month, risk_level""",
+}
+for _c in CARDS:
+    _c["gold_sql"] = GOLD_SQL[_c["key"]]
+
+OPTIMIZED_PREFIX = "[gold] "
+OPTIMIZED_DASHBOARD = "Daily Sales / \u0641\u0631\u0648\u0634 \u0631\u0648\u0632\u0627\u0646\u0647 \u2014 optimized (gold)"
