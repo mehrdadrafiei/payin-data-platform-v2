@@ -1,0 +1,17 @@
+payin:
+  target: prod
+  outputs:
+    prod:
+      type: clickhouse
+      schema: silver
+      host: "{{ env_var('CH_HOST', 'clickhouse') }}"
+      port: "{{ env_var('CH_HTTP_PORT', '8123') | as_number }}"
+      user: "{{ env_var('CH_USER', 'admin') }}"
+      password: "{{ env_var('CH_PASSWORD', 'ch_pw') }}"
+      secure: false
+      threads: 2
+      connect_timeout: 30
+      send_receive_timeout: 900
+      custom_settings:
+        max_bytes_before_external_group_by: 800000000
+        max_threads: 4

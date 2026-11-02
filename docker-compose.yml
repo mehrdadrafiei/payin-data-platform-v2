@@ -1,0 +1,324 @@
+name: payin
+
+# Registry prefix for Docker Hub images. Default is Docker Hub itself.
+# From networks where Docker Hub is blocked:  HUB_REGISTRY=docker.arvancloud.ir docker compose up -d
+# (or pre-pull + `docker tag` the images, which also works because the final names are identical).
+
+x-tools: &tools
+  build:
+    context: ./tools
+    args:
+      HUB_REGISTRY: ${HUB_REGISTRY:-docker.io}
+      PIP_INDEX_URL: ${PIP_INDEX_URL:-}
+  image: payin-tools:dev
+  restart: "no"
+  environment: &pg_env
+    PGHOST: postgres
+    PGPORT: "5432"
+    PGDATABASE: payin
+    PGUSER: payin
+    PGPASSWORD: payin_pw
+
+services:
+
+  postgres:
+    image: ${HUB_REGISTRY:-docker.io}/library/postgres:16
+    command: >
+      postgres
+      -c wal_level=logical
+      -c max_wal_senders=4
+      -c max_replication_slots=4
+      -c max_slot_wal_keep_size=2GB
+      -c shared_buffers=512MB
+      -c max_wal_size=2GB
+    environment:
+      POSTGRES_DB: payin
+      POSTGRES_USER: payin
+      POSTGRES_PASSWORD: payin_pw
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:55432:5432"
+    mem_limit: 1536m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U payin -d payin"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  kafka:
+    image: ${HUB_REGISTRY:-docker.io}/apache/kafka:3.8.0
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_NUM_PARTITIONS: 1
+      KAFKA_LOG_RETENTION_HOURS: 72
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_HEAP_OPTS: "-Xms512m -Xmx512m"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 15s
+      retries: 20
+      start_period: 15s
+
+  # One-shot: topics are created explicitly (1 partition = total order per table, 3-day retention, no compaction)
+  kafka-init:
+    image: ${HUB_REGISTRY:-docker.io}/apache/kafka:3.8.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        for t in payin.core.merchants payin.core.transactions; do
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+            --topic $$t --partitions 1 --replication-factor 1 \
+            --config retention.ms=259200000 --config cleanup.policy=delete
+        done
+    mem_limit: 512m
+
+  connect:
+    image: quay.io/debezium/connect:2.7.3.Final
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: payin-connect
+      CONFIG_STORAGE_TOPIC: _connect_configs
+      OFFSET_STORAGE_TOPIC: _connect_offsets
+      STATUS_STORAGE_TOPIC: _connect_status
+      CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      STATUS_STORAGE_REPLICATION_FACTOR: 1
+      OFFSET_STORAGE_PARTITIONS: 1
+      STATUS_STORAGE_PARTITIONS: 1
+      # lets the connector config set producer compression (events are verbose JSON)
+      CONNECT_CONNECTOR_CLIENT_CONFIG_OVERRIDE_POLICY: All
+      HEAP_OPTS: "-Xms256m -Xmx768m"
+    ports:
+      - "127.0.0.1:8083:8083"
+    mem_limit: 1280m
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8083/ >/dev/null"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 20s
+
+  clickhouse:
+    image: ${HUB_REGISTRY:-docker.io}/clickhouse/clickhouse-server:24.8
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      CLICKHOUSE_USER: admin
+      CLICKHOUSE_PASSWORD: ch_pw
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - ch_data:/var/lib/clickhouse
+      - ./clickhouse/init:/docker-entrypoint-initdb.d:ro
+      - ./clickhouse/config.d/settings.xml:/etc/clickhouse-server/config.d/settings.xml:ro
+      - ./clickhouse/users.d/limits.xml:/etc/clickhouse-server/users.d/limits.xml:ro
+    ports:
+      - "127.0.0.1:8123:8123"
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    mem_limit: 4g
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  # ---- one-shot jobs, chained in this order: seed -> register-connector -> seed-history -> simulator ----
+
+  # 1) Base data: 2,000 merchants + 5M transactions over 180 days (SQL generate_series, idempotent)
+  seed:
+    image: ${HUB_REGISTRY:-docker.io}/library/postgres:16
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    environment: *pg_env
+    volumes:
+      - ./seed:/seed:ro
+    entrypoint: ["/bin/bash", "/seed/run_seed.sh"]
+    mem_limit: 512m
+
+  # 2) Start CDC (idempotent PUT). Debezium takes the initial snapshot of the seeded tables.
+  register-connector:
+    image: quay.io/debezium/connect:2.7.3.Final
+    depends_on:
+      connect:
+        condition: service_healthy
+      seed:
+        condition: service_completed_successfully
+    restart: "no"
+    volumes:
+      - ./connect:/config:ro
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        curl -fsS --retry 20 --retry-delay 3 --retry-all-errors -X PUT \
+          -H 'Content-Type: application/json' --data @/config/payin-cdc.json \
+          http://connect:8083/connectors/payin-cdc/config > /dev/null && echo "connector registered"
+    mem_limit: 128m
+
+  # 3) Synthetic merchant history (backdated changes), applied once the replication slot exists
+  seed-history:
+    <<: *tools
+    command: ["python", "-m", "payin.seed_history"]
+    depends_on:
+      register-connector:
+        condition: service_completed_successfully
+    mem_limit: 256m
+
+  # 4) Live change simulator (runs until stopped)
+  simulator:
+    <<: *tools
+    command: ["python", "-m", "payin.simulator"]
+    restart: unless-stopped
+    environment:
+      <<: *pg_env
+      SIM_TX_PER_SEC: "20"
+      SIM_MERCHANT_INTERVAL_S: "60"
+      SIM_REVERSALS_PER_SEC: "0.8"
+    depends_on:
+      seed-history:
+        condition: service_completed_successfully
+    mem_limit: 256m
+
+
+  # ---- Transformation plane: silver and gold with dbt (independent from the ingestion plane) ----
+  transformer:
+    build:
+      context: ./transformer
+      args:
+        HUB_REGISTRY: ${HUB_REGISTRY:-docker.io}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-}
+    image: payin-transformer:dev
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    environment:
+      CH_URL: http://clickhouse:8123
+      CH_HOST: clickhouse
+      CH_USER: admin
+      CH_PASSWORD: ch_pw
+      DBT_INTERVAL_S: "30"
+      DBT_TEST_EVERY_S: "600"
+    volumes:
+      - ./dbt:/app/dbt:ro
+      - secrets:/secrets
+    restart: unless-stopped
+    mem_limit: 768m
+
+  # ---- BI: Metabase (own small Postgres for its metadata) ----
+  metabase-db:
+    image: ${HUB_REGISTRY:-docker.io}/library/postgres:16
+    environment:
+      POSTGRES_DB: metabase
+      POSTGRES_USER: metabase
+      POSTGRES_PASSWORD: metabase_pw
+    volumes:
+      - mb_db_data:/var/lib/postgresql/data
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U metabase -d metabase"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  metabase:
+    # Built from ./metabase/Dockerfile: official Metabase + the ClickHouse driver baked in.
+    # The driver minor version must match the Metabase minor version (0.53.x <-> driver 1.53.x).
+    build:
+      context: ./metabase
+      args:
+        HUB_REGISTRY: ${HUB_REGISTRY:-docker.io}
+        METABASE_VERSION: ${METABASE_VERSION:-v0.53.5}
+    image: payin-metabase:dev
+    depends_on:
+      metabase-db:
+        condition: service_healthy
+    environment:
+      MB_DB_TYPE: postgres
+      MB_DB_HOST: metabase-db
+      MB_DB_PORT: "5432"
+      MB_DB_DBNAME: metabase
+      MB_DB_USER: metabase
+      MB_DB_PASS: metabase_pw
+      MB_ANON_TRACKING_ENABLED: "false"
+      MB_CHECK_FOR_UPDATES: "false"
+      JAVA_OPTS: "-Xms512m -Xmx1g"
+    ports:
+      - "127.0.0.1:3000:3000"
+    mem_limit: 1536m
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:3000/api/health >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 40
+      start_period: 90s
+
+  # One-shot, idempotent: admin user, data sources, baseline cards, baseline dashboard
+  metabase-bootstrap:
+    <<: *tools
+    command: ["python", "-m", "payin.metabase_bootstrap"]
+    environment:
+      <<: *pg_env
+      MB_URL: http://metabase:3000
+    depends_on:
+      metabase:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    mem_limit: 256m
+
+  # Ad-hoc commands (benchmark): docker compose run --rm cli python -m payin.benchmark --label baseline
+  cli:
+    <<: *tools
+    profiles: ["cli"]
+    environment:
+      <<: *pg_env
+      MB_URL: http://metabase:3000
+      SIM_STATE: ${SIM_STATE:-unknown}
+      CH_URL: http://clickhouse:8123
+      CH_USER: admin
+      CH_PASSWORD: ch_pw
+      CONNECT_URL: http://connect:8083
+    volumes:
+      - ./benchmarks:/app/benchmarks
+      - ./tools/tests:/app/tests:ro
+      - secrets:/secrets:ro
+    mem_limit: 256m
+
+volumes:
+  pg_data:
+  kafka_data:
+  ch_data:
+  mb_db_data:
+  secrets:

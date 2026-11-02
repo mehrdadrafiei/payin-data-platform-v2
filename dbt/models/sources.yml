@@ -1,0 +1,23 @@
+version: 2
+
+sources:
+  - name: bronze
+    description: >
+      Immutable log of Debezium change events, written by ClickHouse's own Kafka consumer (not by dbt).
+      One row per event: Kafka offset, operation (r/c/u/d), Postgres log position (LSN) and the full JSON payload.
+    schema: bronze
+    meta:
+      owner: payments-data-platform
+      contains_pii: true
+      access: restricted (only the ingestion and transformation users)
+    tables:
+      - name: merchants_cdc
+        loaded_at_field: _ingested_at
+        freshness:
+          warn_after: {count: 5, period: minute}
+          error_after: {count: 30, period: minute}
+      - name: transactions_cdc
+        loaded_at_field: _ingested_at
+        freshness:
+          warn_after: {count: 5, period: minute}
+          error_after: {count: 30, period: minute}

@@ -1,0 +1,23 @@
+name: payin
+version: "1.0"
+config-version: 2
+profile: payin
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+
+vars:
+  # Each run re-reads this many offsets BEFORE the watermark. Everything downstream is idempotent,
+  # so the overlap is free insurance against rows becoming visible out of order.
+  overlap_offsets: 20000
+  # Upper bound of events one run processes per model (keeps memory bounded after a long outage / first load).
+  max_batch_events: 1000000
+
+models:
+  payin:
+    silver:
+      +schema: silver
+      +tags: ["silver"]
+    gold:
+      +schema: gold
+      +tags: ["gold"]

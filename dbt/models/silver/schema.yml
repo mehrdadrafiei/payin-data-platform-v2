@@ -1,0 +1,66 @@
+version: 2
+
+models:
+  - name: stg_merchants_events
+    description: "Typed change events of core.merchants (physical table; read it through merchants_events). PII replaced by HMAC tokens."
+    meta: {owner: payments-data-platform, layer: silver, contains_pii: false}
+  - name: stg_transactions_events
+    description: "Typed change events of core.transactions (physical table; read it through transactions_events)."
+    meta: {owner: payments-data-platform, layer: silver, contains_pii: false}
+  - name: merchants_state
+    description: "Versioned current state of merchants (ReplacingMergeTree). Read through merchants_current."
+    meta: {owner: payments-data-platform, layer: silver, contains_pii: false}
+  - name: transactions_state
+    description: "Versioned current state of transactions (ReplacingMergeTree). Read through transactions_current."
+    meta: {owner: payments-data-platform, layer: silver, contains_pii: false}
+
+  - name: merchants_events
+    description: "Every distinct merchant change event exactly once."
+    columns:
+      - name: event_key
+        data_tests: [unique, not_null]
+      - name: op
+        data_tests:
+          - accepted_values: {values: ['r', 'c', 'u', 'd']}
+
+  - name: transactions_events
+    description: "Every distinct transaction change event exactly once."
+    columns:
+      - name: event_key
+        data_tests: [unique, not_null]
+      - name: op
+        data_tests:
+          - accepted_values: {values: ['r', 'c', 'u', 'd']}
+
+  - name: merchants_current
+    description: "Current merchants, one row per merchant. Owner identity only as HMAC tokens / masked mobile."
+    meta: {owner: payments-data-platform, layer: silver, contains_pii: false}
+    columns:
+      - name: merchant_id
+        data_tests: [unique, not_null]
+      - name: risk_level
+        data_tests:
+          - accepted_values: {values: ['LOW', 'MEDIUM', 'HIGH']}
+      - name: owner_national_id_token
+        description: "HMAC-SHA256 of the owner's national id (secret key). Same owner = same token."
+        meta: {sensitivity: pseudonymised-personal-data}
+        data_tests: [not_null]
+      - name: owner_mobile_token
+        meta: {sensitivity: pseudonymised-personal-data}
+      - name: owner_mobile_masked
+        meta: {sensitivity: masked-personal-data}
+
+  - name: transactions_current
+    description: "Current transactions, one row per transaction; hard-deleted (test) transactions are absent."
+    columns:
+      - name: transaction_id
+        data_tests: [unique, not_null]
+      - name: merchant_id
+        data_tests:
+          - relationships: {to: ref('merchants_current'), field: merchant_id}
+      - name: channel
+        data_tests:
+          - accepted_values: {values: ['POS', 'IPG', 'QR']}
+      - name: status
+        data_tests:
+          - accepted_values: {values: ['PENDING', 'SUCCESS', 'FAILED', 'REVERSED']}

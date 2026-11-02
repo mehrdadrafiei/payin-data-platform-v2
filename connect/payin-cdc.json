@@ -1,0 +1,23 @@
+{
+  "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+  "database.hostname": "postgres",
+  "database.port": "5432",
+  "database.user": "cdc",
+  "database.password": "cdc_pw",
+  "database.dbname": "payin",
+  "topic.prefix": "payin",
+  "plugin.name": "pgoutput",
+  "slot.name": "payin_slot",
+  "publication.name": "payin_pub",
+  "publication.autocreate.mode": "disabled",
+  "schema.include.list": "core",
+  "table.include.list": "core.merchants,core.transactions",
+  "snapshot.mode": "initial",
+  "tombstones.on.delete": "false",
+  "skipped.operations": "t",
+  "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+  "key.converter.schemas.enable": "false",
+  "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+  "value.converter.schemas.enable": "false",
+  "producer.override.compression.type": "lz4"
+}

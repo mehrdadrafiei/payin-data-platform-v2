@@ -1,0 +1,14 @@
+<clickhouse>
+    <!-- Hard ceiling for the whole server (container limit is 4 GB) -->
+    <max_server_memory_usage>3221225472</max_server_memory_usage>
+    <mark_cache_size>268435456</mark_cache_size>
+
+    <!-- New Kafka consumer groups start from the oldest message, never skip data -->
+    <kafka>
+        <auto_offset_reset>earliest</auto_offset_reset>
+    </kafka>
+
+    <logger>
+        <level>warning</level>
+    </logger>
+</clickhouse>

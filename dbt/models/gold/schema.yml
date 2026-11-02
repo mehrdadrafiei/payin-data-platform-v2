@@ -1,0 +1,77 @@
+version: 2
+
+models:
+  - name: dim_merchant
+    description: >
+      SCD Type 2 merchant dimension built from the change events. Grain: one row per merchant per version
+      (period with constant name / mcc / province / risk_level). valid_from <= t < valid_to. The first version starts
+      at 1970-01-01 (earliest known state), the current version ends at 2299-12-31.
+    meta: {owner: payments-data-platform, layer: gold, contains_pii: false, grain: "merchant x version"}
+    columns:
+      - name: merchant_id
+        data_tests: [not_null]
+      - name: version_no
+        data_tests: [not_null]
+      - name: valid_from
+        data_tests: [not_null]
+      - name: valid_to
+        data_tests: [not_null]
+      - name: risk_level
+        data_tests:
+          - accepted_values: {values: ['LOW', 'MEDIUM', 'HIGH']}
+      - name: owner_national_id_token
+        description: "HMAC token (pseudonymised), never the national id."
+        meta: {sensitivity: pseudonymised-personal-data}
+
+  - name: fct_transactions_state
+    description: "Versioned physical fact table (ReplacingMergeTree). Read it through fct_transactions."
+    meta: {owner: payments-data-platform, layer: gold, contains_pii: false}
+
+  - name: fct_transactions
+    description: >
+      Transaction fact. Grain: one row per current (not deleted) transaction. province_at_txn, risk_level_at_txn and mcc
+      are the merchant's values at the time of the transaction (created_at). txn_date / txn_month are Asia/Tehran
+      day / Gregorian month.
+    meta: {owner: payments-data-platform, layer: gold, contains_pii: false, grain: "transaction"}
+    columns:
+      - name: transaction_id
+        data_tests: [unique, not_null]
+      - name: merchant_id
+        data_tests:
+          - relationships: {to: ref('merchants_current'), field: merchant_id}
+      - name: status
+        data_tests:
+          - accepted_values: {values: ['PENDING', 'SUCCESS', 'FAILED', 'REVERSED']}
+      - name: channel
+        data_tests:
+          - accepted_values: {values: ['POS', 'IPG', 'QR']}
+      - name: risk_level_at_txn
+        description: "Merchant risk level valid at created_at. Empty only if no merchant version was found (tested)."
+        data_tests:
+          - accepted_values: {values: ['LOW', 'MEDIUM', 'HIGH']}
+      - name: card_bin
+        description: "First 6 digits of the card number (identifies the issuing bank, not the card holder)."
+        meta: {sensitivity: internal}
+
+  - name: agg_daily_channel
+    description: "Grain: Tehran day x channel. Counts per status and successful amount (cards 1 and 2)."
+    meta: {owner: payments-data-platform, layer: gold, contains_pii: false, grain: "day x channel"}
+    columns:
+      - name: txn_date
+        data_tests: [not_null]
+      - name: channel
+        data_tests:
+          - accepted_values: {values: ['POS', 'IPG', 'QR']}
+  - name: agg_merchant_month
+    description: "Grain: Tehran month x merchant. Successful count and amount (card 3)."
+    meta: {owner: payments-data-platform, layer: gold, contains_pii: false, grain: "month x merchant"}
+  - name: agg_fee_day_mcc_province
+    description: "Grain: Tehran day x MCC x province at transaction time. Fees of successful transactions (card 4)."
+    meta: {owner: payments-data-platform, layer: gold, contains_pii: false, grain: "day x mcc x province_at_txn"}
+  - name: agg_month_risk
+    description: "Grain: Tehran month x risk level at transaction time. Successful count and amount (card 5)."
+    meta: {owner: payments-data-platform, layer: gold, contains_pii: false, grain: "month x risk_level_at_txn"}
+    columns:
+      - name: risk_level_at_txn
+        data_tests:
+          - accepted_values: {values: ['LOW', 'MEDIUM', 'HIGH']}

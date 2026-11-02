@@ -1,0 +1,8 @@
+<clickhouse>
+    <profiles>
+        <default>
+            <!-- One query may use at most 2 GB (server ceiling is 3 GB) -->
+            <max_memory_usage>2000000000</max_memory_usage>
+        </default>
+    </profiles>
+</clickhouse>
