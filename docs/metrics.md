@@ -7,10 +7,10 @@
   because its outcome is not known yet. If the denominator is 0 the rate is empty (NULL), not 0.
 * **Card 1**: successful amount and count per day, last 90 days including today.
 * **Card 2**: success rate per day and channel, last 30 days including today.
-* **Card 3**: top 10 merchants by successful amount in the current month.
+* **Card 3**: top 10 merchants by successful amount in the current month. Empty at the start of a month until transactions arrive.
 * **Card 4**: sum of `fee_amount` of successful transactions by merchant category (MCC) and province, last 90 days.
   Baseline on `core` can only use the merchant's CURRENT province. The optimized version uses the province the
-  merchant had AT TRANSACTION TIME; the difference is explained in the README.
+  merchant had AT TRANSACTION TIME; see `benchmarks/parity.md` and `docs/data-model.md`.
 * **Card 5**: successful transaction count and amount per month and merchant risk level. Baseline uses the
   CURRENT risk level; the optimized version uses the risk level AT TRANSACTION TIME.
 * Amounts are in rials.

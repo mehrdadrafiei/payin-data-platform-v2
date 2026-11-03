@@ -28,14 +28,29 @@ def test_no_broken_messages():
 
 # ------------------------------------------------------------- snapshot -----
 def test_initial_snapshot_is_complete_and_has_no_duplicates(pg):
-    """Every seeded row must have arrived exactly once as a snapshot ('r') event."""
+    """Every seeded row must have arrived exactly once as a snapshot ('r') event.
+    On a fresh start Kafka may still be delivering millions of events, so wait until the counts settle."""
     seed_ts = pg.execute("SELECT value::timestamptz FROM public._seed_state WHERE key = 'seed_ts'").fetchone()[0]
     n_txn = pg.execute("SELECT count(*) FROM core.transactions WHERE created_at <= %s", (seed_ts,)).fetchone()[0]
     n_mer = pg.execute("SELECT count(*) FROM core.merchants").fetchone()[0]
-    r_txn = ch_rows("SELECT count() AS n, uniqExact(pk) AS keys FROM bronze.transactions_cdc WHERE op = 'r'")[0]
-    r_mer = ch_rows("SELECT count() AS n, uniqExact(pk) AS keys FROM bronze.merchants_cdc WHERE op = 'r'")[0]
-    assert r_txn["n"] == r_txn["keys"] == n_txn
-    assert r_mer["n"] == r_mer["keys"] == n_mer
+
+    def snapshot_counts():
+        r_txn = ch_rows("SELECT count() AS n, uniqExact(pk) AS keys FROM bronze.transactions_cdc WHERE op = 'r'")[0]
+        r_mer = ch_rows("SELECT count() AS n, uniqExact(pk) AS keys FROM bronze.merchants_cdc WHERE op = 'r'")[0]
+        return r_txn, r_mer
+
+    def complete():
+        r_txn, r_mer = snapshot_counts()
+        return r_txn["n"] == r_txn["keys"] == n_txn and r_mer["n"] == r_mer["keys"] == n_mer
+
+    try:
+        eventually(complete, timeout=900, interval=10,
+                   what="complete snapshot in bronze (no missing rows, no duplicates)")
+    except AssertionError:
+        r_txn, r_mer = snapshot_counts()
+        assert r_txn["n"] == r_txn["keys"] == n_txn, f"transactions: expected {n_txn}, got {r_txn}"
+        assert r_mer["n"] == r_mer["keys"] == n_mer, f"merchants: expected {n_mer}, got {r_mer}"
+        raise
 
 
 # ------------------------------------------------ insert / update / delete --

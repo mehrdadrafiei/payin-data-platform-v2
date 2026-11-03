@@ -52,10 +52,12 @@ def test_dashboard_user_can_read_every_gold_object():
         assert status == 200 and int(body.strip()) > 0, (obj, status, body[:200])
 
 
-def test_every_optimized_card_runs_as_the_dashboard_user():
+def test_every_optimized_card_runs_as_the_dashboard_user(pipeline_ready):
     for c in C.CARDS:
         status, body = ch_as_bi(c["gold_sql"])
-        assert status == 200 and body.strip(), (c["key"], status, body[:300])
+        assert status == 200, (c["key"], status, body[:300])
+        if c["key"] != "card3":                 # card 3 is empty until the current month has data
+            assert body.strip(), (c["key"], "returned no rows")
 
 
 def test_dashboard_user_cannot_read_bronze_silver_or_ops():

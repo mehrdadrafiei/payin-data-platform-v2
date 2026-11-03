@@ -18,7 +18,7 @@
 WITH ev AS (
     SELECT
         merchant_id, source_lsn, kafka_offset,
-        name, mcc, province, risk_level, owner_national_id_token,
+        name, mcc, province, risk_level,
         ifNull(updated_at, toDateTime64(0, 6, 'UTC')) AS business_ts,
         (name, mcc, province, risk_level) AS attrs
     FROM {{ ref('merchants_events') }}
@@ -35,7 +35,7 @@ marked AS (
 versions AS (
     SELECT
         merchant_id, source_lsn, kafka_offset,
-        name, mcc, province, risk_level, owner_national_id_token,
+        name, mcc, province, risk_level,
         if(rn = 1, toDateTime64('1970-01-01 00:00:00', 6, 'UTC'), business_ts) AS valid_from
     FROM marked
     WHERE rn = 1 OR attrs != prev_attrs
@@ -50,7 +50,6 @@ SELECT
         PARTITION BY merchant_id ORDER BY source_lsn, kafka_offset
         ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS valid_to,
     name, mcc, province, risk_level,
-    owner_national_id_token,
     kafka_offset AS first_kafka_offset
 FROM versions
 )

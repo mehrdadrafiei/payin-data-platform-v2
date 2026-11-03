@@ -33,3 +33,4 @@ short-lived test transactions (card bin `000000`) that are hard-deleted after 20
 changes risk level and province every minute (configurable). When the column `installments` is added, the
 simulator starts filling it. After a simulator restart, still-pending rows are rescheduled for the first simulator
 tick at or after 10 seconds from creation; the outcome is sampled again because the prior in-memory schedule is lost.
+Unit tests in `tools/tests/test_logic.py` cover the generators and the restart-recovery timing.

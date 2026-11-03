@@ -98,6 +98,9 @@ def test_owner_identity_is_only_an_hmac_token(pg, pipeline_ready):
     cols = [r["name"] for r in ch_rows("SELECT name FROM system.columns WHERE database IN ('silver', 'gold')")]
     bad = [c for c in cols if re.search(r"national_id|mobile", c) and not re.search(r"token|masked", c)]
     assert not bad, f"columns that could hold personal data in clear text: {bad}"
+    gold_tokens = [r["name"] for r in ch_rows(
+        "SELECT name FROM system.columns WHERE database = 'gold' AND name LIKE '%token%'")]
+    assert not gold_tokens, f"gold must not carry pseudonymised identifiers: {gold_tokens}"
 
 
 # ------------------------------------------------------- SCD2 / gold model ----

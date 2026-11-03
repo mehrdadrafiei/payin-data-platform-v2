@@ -5,7 +5,7 @@
 ```
 Postgres core.*  --Debezium/Kafka-->  bronze  --dbt-->  silver  --dbt-->  gold  --> Metabase (gold only)
                   (ingestion plane)    CDC log           clean, current     business model
-                                       (ClickHouse        state, no PII      + serving aggregates
+                                       (ClickHouse        state, no clear-text PII  + serving aggregates
                                         Kafka engine)
 ```
 
@@ -69,3 +69,4 @@ Naming: `stg_*` typed event log, `*_state` versioned physical table (ReplacingMe
 * Groups that vanish completely are overwritten with zero rows and hidden by the views.
 * `TRUNCATE` on the source is not captured. Merchant deletes are not modelled (the dimension keeps history).
 * A very long outage (longer than Kafka's 3-day retention) loses events that bronze did not receive in time; a Debezium incremental snapshot only re-sends CURRENT rows, never past versions or deleted rows.
+* Bronze keeps clear-text owner identifiers and has no TTL; see `governance.md`.

@@ -19,9 +19,6 @@ models:
       - name: risk_level
         data_tests:
           - accepted_values: {values: ['LOW', 'MEDIUM', 'HIGH']}
-      - name: owner_national_id_token
-        description: "HMAC token (pseudonymised), never the national id."
-        meta: {sensitivity: pseudonymised-personal-data}
 
   - name: fct_transactions_state
     description: "Versioned physical fact table (ReplacingMergeTree). Read it through fct_transactions."
