@@ -11,6 +11,8 @@
 | Aggregates recomputed per affected day/month | late reversals and merchant corrections stay exact | additive deltas (drift) |
 | Python scheduler loop | one process, 30 s cycle, logs to `ops.dbt_runs` | Airflow |
 | Metabase on gold only (+ baseline on Postgres) | dashboards cannot touch bronze/silver | admin connection |
+| Separate read-only BI users (`bi_ro`) on both databases | dashboards cannot reach bronze, silver or owner columns | admin connection |
+| HMAC-SHA256 with a secret for owner identifiers | 10-digit ids and mobile numbers are brute-forceable with a plain hash | plain SHA-256 |
 
 ## Where Airflow / Spark would fit
 * Airflow: many dependent jobs, backfills with dated parameters, SLAs and alerting, several teams. Here there is one

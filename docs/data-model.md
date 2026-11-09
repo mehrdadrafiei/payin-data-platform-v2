@@ -35,7 +35,7 @@ flowchart LR
 |---|---|---|---|
 | **bronze** | One append-only table per source table: Kafka offset, op (r/c/u/d), Postgres LSN, full JSON payload. The only place with personal data in clear text. | Insert only, by ClickHouse's own Kafka consumer | Parsing, business rules, updates, deletes, TTL, access by dashboards or by dbt writes |
 | **silver** | Typed, de-duplicated events; versioned current state; owner identity as HMAC tokens | Typing, de-duplication, hashing/masking, "latest version wins" | Joins between tables, business rules, personal data in clear text |
-| **gold** | SCD2 merchant dimension, transaction fact, serving aggregates | Joins, point-in-time logic, metric definitions, aggregation; documented pseudonymous tokens are still sensitive | Direct identifiers, raw events |
+| **gold** | SCD2 merchant dimension, transaction fact, serving aggregates | Joins, point-in-time logic, metric definitions, aggregation;  | Direct identifiers, raw events |
 
 Naming: `stg_*` typed event log, `*_state` versioned physical table (ReplacingMergeTree), views without suffix
 (`*_current`, `*_events`, `fct_transactions`, `agg_*`) read the latest version with `FINAL`. Always query the views.

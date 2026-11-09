@@ -74,11 +74,6 @@ add-installments:  ## schema change, nullable column (run ONE of the two)
 add-installments-default:  ## schema change with a default: old rows are NOT emitted by CDC (known trap)
 	$(PG) -c "ALTER TABLE core.transactions ADD COLUMN installments INTEGER NOT NULL DEFAULT 1"
 
-spike-rmt:
-	$(CH) < spike/rmt_test.sql
-
-spike-hmac:
-	python3 spike/hmac_check.py
 test: test-unit test-e2e
 
 test-unit:  ## fast logic tests (no stack needed except the image)
@@ -123,3 +118,9 @@ parity-quiet:  ## stops the simulator, retries up to 5 min until the pipeline ha
 
 benchmark-report:  ## benchmarks/report.md from the latest baseline + optimized measurements (ARGS="--simulator stopped")
 	docker compose run --rm cli python -m payin.benchmark_report $(ARGS)
+
+kafka-ui:  ## optional: Kafka UI at http://localhost:8080 (not part of `make up`)
+	docker compose -f docker-compose.yml -f docker-compose.tools.yml up -d kafka-ui
+
+kafka-ui-down:
+	docker compose -f docker-compose.yml -f docker-compose.tools.yml rm -sf kafka-ui

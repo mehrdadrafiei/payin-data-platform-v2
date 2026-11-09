@@ -1,0 +1,20 @@
+# Optional learning/debug tools. Not part of `make up`.
+# Start:  make kafka-ui     Stop:  make kafka-ui-down
+services:
+  kafka-ui:
+    image: ${HUB_REGISTRY:-docker.io}/provectuslabs/kafka-ui:latest
+    depends_on:
+      kafka:
+        condition: service_healthy
+      connect:
+        condition: service_healthy
+    environment:
+      KAFKA_CLUSTERS_0_NAME: payin
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_NAME: debezium
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS: http://connect:8083
+      DYNAMIC_CONFIG_ENABLED: "false"
+      JAVA_OPTS: "-Xms128m -Xmx384m"
+    ports:
+      - "127.0.0.1:8080:8080"
+    mem_limit: 512m
